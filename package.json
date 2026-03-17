@@ -1,0 +1,70 @@
+{
+  "name": "dvoa-results-poster",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Standalone tool for posting orienteering event results online - generates HTML results and splits pages from OE12 XML files",
+  "author": "DVOA",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5175 && electron .\"",
+    "electron:build": "npm run build && electron-builder",
+    "electron:dist": "npm run build && electron-builder --publish=never",
+    "pack:win": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.0.2",
+    "antd": "^5.27.4",
+    "electron-is-dev": "^2.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "sql.js": "^1.13.0"
+  },
+  "main": "public/electron.cjs",
+  "homepage": "./",
+  "build": {
+    "appId": "com.dvoa.results-poster",
+    "productName": "DVOA Results Poster",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "public/**/*",
+      "node_modules/**/*"
+    ],
+    "icon": "public/icon.ico",
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/icon.ico",
+      "publisherName": "DVOA",
+      "verifyUpdateCodeSignature": false,
+      "sign": null
+    },
+    "portable": {
+      "artifactName": "DVOA_Results_Poster.exe"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.1",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^8.2.2",
+    "electron": "^32.2.8",
+    "electron-builder": "^25.0.5",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.2",
+    "wait-on": "^8.0.1"
+  }
+}
