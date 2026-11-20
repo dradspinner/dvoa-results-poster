@@ -7,45 +7,146 @@ const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.
 const serviceSource = readFileSync(new URL('../src/services/resultsExportService.ts', import.meta.url), 'utf8');
 const serviceJs = ts.transpileModule(serviceSource, { compilerOptions }).outputText;
 const { resultsExportService } = await import(`data:text/javascript;base64,${Buffer.from(serviceJs).toString('base64')}`);
-const header = 'Last Name,First Name,Year of Birth,Sex,Club,Group/Solo,Time,Place,Course';
+const header = 'Last Name,First Name,Year of Birth,Sex,Club,Group/Solo,Time,Place,Status,Course';
 const runner = (overrides = {}) => ({
-  id: 'runner_1', name: 'Alice Smith', firstName: 'Alice', lastName: 'Smith',
-  yearOfBirth: 1990, sex: 'F', club: 'DVOA', nationality: 'USA',
-  status: 'OK', startTime: '0', runTime: '1800', place: '1', ...overrides
+  name: 'Alice Smith', firstName: 'Alice', lastName: 'Smith',
+  yearOfBirth: 1990, sex: 'F', club: 'DVOA',
+  status: 'OK', runTime: '1800', place: '1', ...overrides
 });
 const course = (runners, className = 'White') => ({ classId: '1', className, runners });
-const exportRows = runners => resultsExportService.generateFlatCSV([course(runners)]).split('\r\n').slice(1);
+const exportRows = (runners, overrides) => resultsExportService.generateFlatCSV([course(runners)], overrides).split('\r\n').slice(1);
 
-test('exports the exact nine-column header, including empty events', () => {
+// ── Header ──────────────────────────────────────────────────────────────────
+
+test('exports the exact ten-column header, including empty events', () => {
   assert.equal(resultsExportService.generateFlatCSV([]), header);
   assert.equal(resultsExportService.generateFlatCSV([course([])]), header);
 });
 
+// ── Basic export ────────────────────────────────────────────────────────────
+
 test('exports finishers with an Excel day fraction and CRLF records', () => {
   assert.equal(resultsExportService.generateFlatCSV([course([runner()])]),
-    `${header}\r\nSmith,Alice,1990,F,DVOA,Solo,0.0208333333,1,White`);
+    `${header}\r\nSmith,Alice,1990,F,DVOA,Solo,0.0208333333,1,,White`);
 });
 
-test('recognizes nationality code zero as Group, without guessing from missing personal data', () => {
+// ── Group detection ─────────────────────────────────────────────────────────
+
+test('empty Family + non-empty Given is a structural group (regardless of nationality)', () => {
   const rows = exportRows([
-    runner({ nationality: '0', firstName: 'Alice & Bob', lastName: '', yearOfBirth: undefined }),
-    runner({ nationality: '', yearOfBirth: undefined })
+    runner({ firstName: 'Alice & Bob', lastName: '', yearOfBirth: undefined, sex: undefined }),
+    runner({ firstName: 'Team Fun', lastName: '', yearOfBirth: undefined, sex: undefined, nationality: '2' }),
   ]);
-  assert.equal(rows[0], ',Alice & Bob,,F,DVOA,Group,0.0208333333,1,White');
-  assert.equal(rows[1], 'Smith,Alice,,F,DVOA,Solo,0.0208333333,1,White');
+  assert.match(rows[0], /^,Alice & Bob.*Group/);
+  assert.match(rows[1], /^,Team Fun.*Group/);
 });
 
-test('excludes both DNS status spellings', () => {
-  assert.equal(resultsExportService.generateFlatCSV([course([
-    runner({ status: 'DNS' }), runner({ status: 'DidNotStart' })
-  ])]), header);
+test('no YOB + no sex with non-empty lastName defaults to Group', () => {
+  const rows = exportRows([
+    runner({ yearOfBirth: undefined, sex: undefined }),
+  ]);
+  assert.equal(rows[0], 'Smith,Alice,,,DVOA,Group,0.0208333333,1,,White');
 });
 
-test('leaves finishing time and place blank for non-finishers and unranked statuses', () => {
-  for (const status of ['MissingPunch', 'MP', 'DidNotFinish', 'DNF', 'Disqualified', 'NotCompeting']) {
-    assert.equal(exportRows([runner({ status })])[0], 'Smith,Alice,1990,F,DVOA,Solo,,,White', status);
+test('having YOB makes an entry Solo even without sex', () => {
+  const rows = exportRows([
+    runner({ yearOfBirth: 1990, sex: undefined }),
+  ]);
+  assert.match(rows[0], /Solo/);
+});
+
+test('having sex makes an entry Solo even without YOB', () => {
+  const rows = exportRows([
+    runner({ yearOfBirth: undefined, sex: 'F' }),
+  ]);
+  assert.match(rows[0], /Solo/);
+});
+
+test('groupOverrides override the default group detection', () => {
+  // Default would be Group (no YOB, no sex)
+  const predicted = runner({ yearOfBirth: undefined, sex: undefined });
+  const overrides = new Map([['White|Alice|Smith', false]]);
+  const rows = exportRows([predicted], overrides);
+  assert.match(rows[0], /Solo/);
+
+  // Default would be Solo (has YOB), override to Group
+  const solo = runner();
+  const overrides2 = new Map([['White|Alice|Smith', true]]);
+  const rows2 = exportRows([solo], overrides2);
+  assert.match(rows2[0], /Group/);
+});
+
+test('nationality and bibNumber do NOT affect group detection', () => {
+  // nationality='0' but has YOB+sex → Solo
+  const rows1 = exportRows([runner({ nationality: '0' })]);
+  assert.match(rows1[0], /Solo/);
+
+  // bibNumber present but has YOB+sex → Solo
+  const rows2 = exportRows([runner({ bibNumber: '2' })]);
+  assert.match(rows2[0], /Solo/);
+
+  // nationality='2' + no YOB + no sex → Group (by heuristic, not nationality)
+  const rows3 = exportRows([runner({ nationality: '2', yearOfBirth: undefined, sex: undefined })]);
+  assert.match(rows3[0], /Group/);
+});
+
+// ── detectPredictedGroups ───────────────────────────────────────────────────
+
+test('detectPredictedGroups flags entries needing validation', () => {
+  const results = [course([
+    runner(),                                                        // has YOB+sex → skip
+    runner({ yearOfBirth: undefined, sex: undefined }),              // no YOB, no sex, non-empty lastName → predicted
+    runner({ firstName: 'GroupName', lastName: '', yearOfBirth: undefined, sex: undefined }), // empty lastName → structural group, skip
+    runner({ yearOfBirth: undefined, sex: 'M' }),                    // has sex → skip
+  ])];
+  const predictions = resultsExportService.detectPredictedGroups(results);
+  assert.equal(predictions.length, 1);
+  assert.equal(predictions[0].name, 'Alice Smith');
+  assert.equal(predictions[0].className, 'White');
+});
+
+// ── DNS inclusion ───────────────────────────────────────────────────────────
+
+test('DNS entries are included with Status DNS', () => {
+  const rows = exportRows([
+    runner({ status: 'DidNotStart', runTime: '0', place: '' }),
+    runner({ status: 'DNS', runTime: '0', place: '', firstName: 'Bob', lastName: 'Jones' }),
+  ]);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0], /,DNS,White$/);
+  assert.match(rows[1], /,DNS,White$/);
+});
+
+// ── Status column ───────────────────────────────────────────────────────────
+
+test('Status is blank for OK finishers', () => {
+  const rows = exportRows([runner()]);
+  assert.equal(rows[0].split(',')[8], '');
+});
+
+test('Status shows short labels for non-finishers', () => {
+  const cases = [
+    ['MissingPunch', 'MP'],
+    ['DidNotFinish', 'DNF'],
+    ['DidNotStart', 'DNS'],
+    ['Disqualified', 'Disqualified'],
+    ['NotCompeting', 'NotCompeting'],
+  ];
+  for (const [xmlStatus, expected] of cases) {
+    const rows = exportRows([runner({ status: xmlStatus, runTime: '0', place: '' })]);
+    assert.equal(rows[0].split(',')[8], expected, xmlStatus);
   }
 });
+
+test('non-finishers have blank time and place', () => {
+  for (const status of ['MissingPunch', 'DidNotFinish', 'DidNotStart']) {
+    const row = exportRows([runner({ status, runTime: '0', place: '' })])[0].split(',');
+    assert.equal(row[6], '', `time for ${status}`);
+    assert.equal(row[7], '', `place for ${status}`);
+  }
+});
+
+// ── Time formatting ─────────────────────────────────────────────────────────
 
 test('preserves fractional times, zero, and durations longer than one day', () => {
   for (const seconds of [0, 0.5, 1800.75, 90000]) {
@@ -60,6 +161,8 @@ test('rejects negative, nonfinite, blank, and partially numeric times', () => {
   }
 });
 
+// ── Place formatting ────────────────────────────────────────────────────────
+
 test('only writes positive integer finishing places', () => {
   for (const place of ['', 'MP', '0', '-1', '1.5', '1,2']) {
     assert.equal(exportRows([runner({ place })])[0].split(',')[7], '', place);
@@ -67,112 +170,45 @@ test('only writes positive integer finishing places', () => {
   assert.equal(exportRows([runner({ place: ' 12 ' })])[0].split(',')[7], '12');
 });
 
+// ── CSV escaping ────────────────────────────────────────────────────────────
+
 test('escapes commas, quotes, CR and LF in every text column', () => {
   const csv = resultsExportService.generateFlatCSV([course([runner({
     lastName: 'Smith, Jr.', firstName: 'Al"ice', club: 'North\rSouth\nClub', sex: 'F,M'
   })], 'White, "Short"')]);
-  assert.equal(csv, `${header}\r\n"Smith, Jr.","Al""ice",1990,"F,M","North\rSouth\nClub",Solo,0.0208333333,1,"White, ""Short"""`);
+  assert.equal(csv, `${header}\r\n"Smith, Jr.","Al""ice",1990,"F,M","North\rSouth\nClub",Solo,0.0208333333,1,,"White, ""Short"""`);
 });
 
-test('supports missing optional fields and Unicode without mutating results', () => {
-  const data = [course([runner({
-    firstName: 'Zoë', lastName: '李', yearOfBirth: undefined, sex: undefined, club: ''
-  })])];
+// ── buildFlatRowData ────────────────────────────────────────────────────────
+
+test('buildFlatRowData returns typed values for XLSX consumption', () => {
+  const { headers, rows } = resultsExportService.buildFlatRowData([course([runner()])]);
+  assert.equal(headers.length, 10);
+  assert.equal(headers[8], 'Status');
+  assert.equal(rows.length, 1);
+  // Time should be a number, not a string
+  assert.equal(typeof rows[0][6], 'number');
+  assert.ok(Math.abs(rows[0][6] * 86400 - 1800) < 0.00001);
+  // Place should be a number
+  assert.equal(rows[0][7], 1);
+  // Status should be empty string for OK
+  assert.equal(rows[0][8], '');
+});
+
+test('buildFlatRowData returns null for missing time and place', () => {
+  const { rows } = resultsExportService.buildFlatRowData([course([
+    runner({ status: 'MissingPunch', runTime: '0', place: '' })
+  ])]);
+  assert.equal(rows[0][6], null); // time
+  assert.equal(rows[0][7], null); // place
+  assert.equal(rows[0][8], 'MP'); // status
+});
+
+// ── Immutability ────────────────────────────────────────────────────────────
+
+test('does not mutate the input data', () => {
+  const data = [course([runner()])];
   const before = structuredClone(data);
-  assert.equal(resultsExportService.generateFlatCSV(data), `${header}\r\n李,Zoë,,,,Solo,0.0208333333,1,White`);
+  resultsExportService.generateFlatCSV(data);
   assert.deepEqual(data, before);
-});
-
-// Extract the component's real handler so its browser/Electron branches can be
-// exercised with controlled I/O without installing a second UI testing framework.
-const componentSource = readFileSync(new URL('../src/components/ResultsExport.tsx', import.meta.url), 'utf8');
-const componentAst = ts.createSourceFile('ResultsExport.tsx', componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let handlerSource;
-function findHandler(node) {
-  if (ts.isVariableDeclaration(node) && node.name.getText(componentAst) === 'handleGenerateFlatCSV') {
-    handlerSource = node.initializer.getText(componentAst);
-  }
-  ts.forEachChild(node, findHandler);
-}
-findHandler(componentAst);
-assert.ok(handlerSource, 'Flat CSV handler exists in the component');
-const handlerJs = ts.transpileModule(`const handler = ${handlerSource};`, { compilerOptions }).outputText;
-
-function exportHarness({ fileName = 'event-results.XML', filePath, bridge = 'electron', saved = { success: true }, canceled = false } = {}) {
-  const state = { results: [], loading: [], writes: [], downloads: [], revoked: [], errors: [] };
-  const api = { saveFile: async (outputPath, content) => {
-    state.writes.push({ outputPath, content });
-    if (saved instanceof Error) throw saved;
-    return saved;
-  } };
-  const bindings = {
-    fileList: canceled ? [] : [{}], fileContent: '<ResultList/>',
-    fileName, filePath: filePath ?? `C:\\events-with-hyphens\\${fileName}`,
-    setLoading: value => state.loading.push(value),
-    setResult: value => state.results.push(value),
-    resultsExportService: { parseOE12XML: () => [course([runner()])], generateFlatCSV: resultsExportService.generateFlatCSV.bind(resultsExportService) },
-    window: bridge === 'browser' ? {} : { [bridge]: api },
-    message: { warning() {}, success() {}, error: value => state.errors.push(value) },
-    console: { error() {} },
-    Blob,
-    URL: { createObjectURL: () => 'blob:flat-csv-test', revokeObjectURL: value => state.revoked.push(value) },
-    document: {
-      createElement: () => ({ click() { state.downloads.push({ filename: this.download, url: this.href }); } }),
-      body: { appendChild() {}, removeChild() {} }
-    }
-  };
-  const handler = new Function(...Object.keys(bindings), `${handlerJs}\nreturn handler;`)(...Object.values(bindings));
-  return { state, run: handler };
-}
-
-test('desktop export normalizes basename hyphens but preserves directory names', async () => {
-  const { state, run } = exportHarness();
-  await run();
-  assert.equal(state.writes[0].outputPath, 'C:\\events-with-hyphens\\event_results_flat.csv');
-  assert.equal(state.results.at(-1).success, true);
-  assert.deepEqual(state.loading, [true, false]);
-});
-
-test('a non-XML filename cannot cause the flat export to overwrite the input', async () => {
-  const { state, run } = exportHarness({ fileName: 'event-data.txt' });
-  await run();
-  assert.equal(state.writes[0].outputPath, 'C:\\events-with-hyphens\\event_data.txt_flat.csv');
-});
-
-test('filename replacement preserves dollar characters literally', async () => {
-  const { state, run } = exportHarness({ fileName: 'event-$&.xml', filePath: '/events-with-hyphens/event-$&.xml' });
-  await run();
-  assert.equal(state.writes[0].outputPath, '/events-with-hyphens/event_$&_flat.csv');
-});
-
-for (const bridge of ['electron', 'electronAPI']) {
-  test(`${bridge} reports unsuccessful saves instead of showing a success result`, async () => {
-    const { state, run } = exportHarness({ bridge, saved: { success: false, error: 'Disk is read-only' } });
-    await run();
-    assert.deepEqual(state.results, [null, { success: false, error: 'Disk is read-only' }]);
-    assert.deepEqual(state.loading, [true, false]);
-    assert.equal(state.errors.length, 1);
-  });
-}
-
-test('rejected saves reset loading and display the actual error', async () => {
-  const { state, run } = exportHarness({ saved: new Error('Disk full') });
-  await run();
-  assert.equal(state.results.at(-1).error, 'Disk full');
-  assert.deepEqual(state.loading, [true, false]);
-});
-
-test('browser fallback downloads the normalized filename and revokes its blob URL', async () => {
-  const { state, run } = exportHarness({ bridge: 'browser' });
-  await run();
-  assert.deepEqual(state.downloads, [{ filename: 'event_results_flat.csv', url: 'blob:flat-csv-test' }]);
-  assert.deepEqual(state.revoked, ['blob:flat-csv-test']);
-  assert.equal(state.results.at(-1).flatCsvPath, 'event_results_flat.csv');
-});
-
-test('export without an input does not write or change loading', async () => {
-  const { state, run } = exportHarness({ canceled: true });
-  await run();
-  assert.deepEqual(state.writes, []);
-  assert.deepEqual(state.loading, []);
 });

@@ -7,9 +7,7 @@ export default defineConfig({
   plugins: [
     react()
   ],
-  assetsInclude: ['**/*.sql'], // Include SQL files as assets
   build: {
-    assetsInlineLimit: 0, // Don't inline SQL files
     rollupOptions: {
       output: {
         manualChunks(id) {

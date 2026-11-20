@@ -1,11 +1,8 @@
-import React, { Suspense, lazy, useState } from 'react';
-import { Card, Button, Space, Alert, Typography, Progress, message, Modal, List, Tag, Spin } from 'antd';
-import { UploadOutlined, FileTextOutlined, CheckCircleOutlined, WarningOutlined, GlobalOutlined, DatabaseOutlined, ToolOutlined, TableOutlined } from '@ant-design/icons';
-import { resultsExportService, ClassResult, NegativeSplitIssue } from '../services/resultsExportService';
-import type { RunnerValidation } from '../services/csvValidationService';
+import React, { useState } from 'react';
+import { Card, Button, Space, Alert, Typography, Progress, message, List, Tag } from 'antd';
+import { UploadOutlined, FileTextOutlined, CheckCircleOutlined, WarningOutlined, GlobalOutlined, ToolOutlined, TableOutlined, FileExcelOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { resultsExportService, ClassResult, PredictedGroup } from '../services/resultsExportService';
 import { xmlCheckerService, XmlCheckResult } from '../services/xmlCheckerService';
-
-const CSVReviewAndFix = lazy(() => import('./CSVReviewAndFix'));
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -13,8 +10,8 @@ interface GenerationResult {
   success: boolean;
   resultsPath?: string;
   splitsPath?: string;
-  csvPath?: string;
   flatCsvPath?: string;
+  xlsxPath?: string;
   error?: string;
 }
 
@@ -31,10 +28,10 @@ const ResultsExport: React.FC = () => {
   const [xmlCheckResult, setXmlCheckResult] = useState<XmlCheckResult | null>(null);
   const [correctingXml, setCorrectingXml] = useState(false);
 
-  // CSV export states
-  const [classResults, setClassResults] = useState<ClassResult[]>([]);
-  const [showCSVReview, setShowCSVReview] = useState(false);
-  const [validationResult, setValidationResult] = useState<any>(null);
+  // Group prediction state
+  const [predictedGroups, setPredictedGroups] = useState<PredictedGroup[]>([]);
+  const [groupOverrides, setGroupOverrides] = useState<Map<string, boolean>>(new Map());
+  const [parsedResults, setParsedResults] = useState<ClassResult[]>([]);
 
   const handleBrowseFile = async () => {
     if (!window.electronAPI) {
@@ -86,6 +83,16 @@ const ResultsExport: React.FC = () => {
           // Auto-run XML checker
           const checkResult = xmlCheckerService.validateXml(fileResult.content);
           setXmlCheckResult(checkResult);
+
+          // Parse and detect predicted groups for validation
+          const parsed = resultsExportService.parseOE12XML(fileResult.content);
+          setParsedResults(parsed);
+          const predictions = resultsExportService.detectPredictedGroups(parsed);
+          setPredictedGroups(predictions);
+          // Default all predictions to Group
+          const defaults = new Map<string, boolean>();
+          predictions.forEach(p => defaults.set(p.key, true));
+          setGroupOverrides(defaults);
           
           message.success(`File loaded: ${selectedFileName}`);
         } else {
@@ -205,137 +212,6 @@ const ResultsExport: React.FC = () => {
     }
   };
 
-  const handleOpenCSV = () => {
-    if (result?.csvPath && window.electron) {
-      window.electron.openExternal(result.csvPath);
-    }
-  };
-
-  const handleGenerateCSV = async () => {
-    if (fileList.length === 0 || !fileContent) {
-      message.warning('Please select an XML file first');
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      // Parse XML
-      const results = resultsExportService.parseOE12XML(fileContent);
-      setClassResults(results);
-      
-      // Check for negative splits
-      const negativeSplits = resultsExportService.detectNegativeSplits(results);
-      if (negativeSplits.length > 0) {
-        // Show warning modal with negative split issues
-        Modal.warning({
-          title: 'Negative Splits Detected',
-          width: 700,
-          content: (
-            <div>
-              <p>The following runners have negative splits (cumulative time decreased between controls):</p>
-              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                {negativeSplits.map((issue, idx) => (
-                  <div key={idx} style={{ marginBottom: '8px', padding: '8px', background: '#fff2e8', border: '1px solid #ffbb96', borderRadius: '4px' }}>
-                    <Text strong>{issue.runnerName}</Text> ({issue.className})
-                    <br />
-                    <Text type="secondary">
-                      Control {issue.controlCode}: time went from {Math.floor(issue.previousTime / 60)}:{(issue.previousTime % 60).toString().padStart(2, '0')} to {Math.floor(issue.currentTime / 60)}:{(issue.currentTime % 60).toString().padStart(2, '0')}
-                      {' '}(leg time: {issue.legTime}s)
-                    </Text>
-                  </div>
-                ))}
-              </div>
-              <p style={{ marginTop: '16px' }}>
-                <Text type="warning">These data issues should be corrected in the source timing system before publishing results.</Text>
-              </p>
-            </div>
-          ),
-          okText: 'Continue Anyway',
-        });
-      }
-      
-      // Validate against database
-      message.info('Validating runner data against database...');
-      const { csvValidationService } = await import('../services/csvValidationService');
-      const validation = await csvValidationService.validateResults(results);
-      setValidationResult(validation);
-      
-      // Show review UI
-      setShowCSVReview(true);
-    } catch (error) {
-      console.error('Error validating results:', error);
-      message.error('Failed to validate results');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCSVReviewComplete = async (validations: RunnerValidation[]) => {
-    setLoading(true);
-    setShowCSVReview(false);
-
-    try {
-      // Build corrected data map
-      const { csvValidationService } = await import('../services/csvValidationService');
-      const correctedData = new Map<string, { firstName: string; lastName: string; yearOfBirth?: number; club?: string }>();
-      
-      validations.forEach(validation => {
-        const finalData = csvValidationService.getFinalData(validation);
-        const key = `${finalData.firstName}_${finalData.lastName}`;
-        correctedData.set(key, finalData);
-      });
-      
-      // Generate CSV
-      const csvContent = resultsExportService.generateCSV(classResults, correctedData);
-      
-      // Determine output path (same directory as input file, replace extension with .csv)
-      const csvOutputPath = filePath.replace(/\.xml$/i, '.csv');
-      
-      // Save file using Electron API
-      if (window.electron) {
-        const csvSaved = await window.electron.saveFile(csvOutputPath, csvContent);
-        
-        if (csvSaved) {
-          setResult({
-            success: true,
-            csvPath: csvOutputPath
-          });
-          message.success('CSV generated successfully!');
-        } else {
-          throw new Error('Failed to save CSV file');
-        }
-      } else {
-        // Fallback for browser: download file
-        const blob = new Blob([csvContent], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileName.replace(/\.xml$/i, '.csv');
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-        
-        setResult({
-          success: true,
-          csvPath: link.download
-        });
-        message.success('CSV downloaded!');
-      }
-    } catch (error) {
-      console.error('Error generating CSV:', error);
-      message.error('Failed to generate CSV');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCSVReviewCancel = () => {
-    setShowCSVReview(false);
-    setValidationResult(null);
-  };
-
   const handleGenerateFlatCSV = async () => {
     if (fileList.length === 0 || !fileContent) {
       message.warning('Please select an XML file first');
@@ -346,22 +222,15 @@ const ResultsExport: React.FC = () => {
     setResult(null);
 
     try {
-      const results = resultsExportService.parseOE12XML(fileContent);
-      const csvContent = resultsExportService.generateFlatCSV(results);
+      const results = parsedResults.length > 0 ? parsedResults : resultsExportService.parseOE12XML(fileContent);
+      const csvContent = resultsExportService.generateFlatCSV(results, groupOverrides);
 
       const flatCsvFileName = fileName.replace(/\.xml$/i, '').replace(/-/g, '_') + '_flat.csv';
       const flatCsvOutputPath = filePath.replace(/[^\\/]+$/, () => flatCsvFileName);
 
-      if (window.electron) {
-        const saved = await window.electron.saveFile(flatCsvOutputPath, csvContent);
-        if (saved.success) {
-          setResult({ success: true, flatCsvPath: flatCsvOutputPath });
-          message.success('Flat CSV generated successfully!');
-        } else {
-          throw new Error(saved.error || 'Failed to save flat CSV file');
-        }
-      } else if (window.electronAPI) {
-        const saved = await window.electronAPI.saveFile(flatCsvOutputPath, csvContent);
+      const api = window.electron || window.electronAPI;
+      if (api) {
+        const saved = await api.saveFile(flatCsvOutputPath, csvContent);
         if (saved.success) {
           setResult({ success: true, flatCsvPath: flatCsvOutputPath });
           message.success('Flat CSV generated successfully!');
@@ -369,7 +238,6 @@ const ResultsExport: React.FC = () => {
           throw new Error(saved.error || 'Failed to save flat CSV file');
         }
       } else {
-        // Browser fallback
         const blob = new Blob([csvContent], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -384,22 +252,89 @@ const ResultsExport: React.FC = () => {
       }
     } catch (error) {
       console.error('Error generating flat CSV:', error);
-      setResult({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to generate flat CSV'
-      });
+      setResult({ success: false, error: error instanceof Error ? error.message : 'Failed to generate flat CSV' });
       message.error('Failed to generate flat CSV');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleOpenFlatCSV = () => {
-    if (result?.flatCsvPath && window.electron) {
-      window.electron.openExternal(result.flatCsvPath);
-    } else if (result?.flatCsvPath && window.electronAPI) {
-      window.electronAPI.openExternal(result.flatCsvPath);
+  const handleGenerateXLSX = async () => {
+    if (fileList.length === 0 || !fileContent) {
+      message.warning('Please select an XML file first');
+      return;
     }
+
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const results = parsedResults.length > 0 ? parsedResults : resultsExportService.parseOE12XML(fileContent);
+      const { headers, rows } = resultsExportService.buildFlatRowData(results, groupOverrides);
+
+      const XLSX = await import('xlsx');
+      const wsData = [headers, ...rows.map(row => row.map(cell => cell === null ? '' : cell))];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+      // Format the Time column (index 6) as [h]:mm:ss for rows with numeric values
+      const timeCol = 6;
+      for (let r = 1; r <= rows.length; r++) {
+        const cellRef = XLSX.utils.encode_cell({ r, c: timeCol });
+        if (ws[cellRef] && typeof ws[cellRef].v === 'number') {
+          ws[cellRef].z = '[h]:mm:ss';
+        }
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Results');
+      const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+
+      const xlsxFileName = fileName.replace(/\.xml$/i, '').replace(/-/g, '_') + '_flat.xlsx';
+      const xlsxOutputPath = filePath.replace(/[^\\/]+$/, () => xlsxFileName);
+
+      const api = window.electronAPI || window.electron;
+      if (api?.saveBinaryFile) {
+        const saved = await api.saveBinaryFile(xlsxOutputPath, base64);
+        if (saved.success) {
+          setResult({ success: true, xlsxPath: xlsxOutputPath });
+          message.success('XLSX generated successfully!');
+        } else {
+          throw new Error(saved.error || 'Failed to save XLSX file');
+        }
+      } else {
+        // Browser fallback
+        const byteStr = atob(base64);
+        const bytes = new Uint8Array(byteStr.length);
+        for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = xlsxFileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        setResult({ success: true, xlsxPath: link.download });
+        message.success('XLSX downloaded!');
+      }
+    } catch (error) {
+      console.error('Error generating XLSX:', error);
+      setResult({ success: false, error: error instanceof Error ? error.message : 'Failed to generate XLSX' });
+      message.error('Failed to generate XLSX');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenFlatCSV = () => {
+    const api = window.electron || window.electronAPI;
+    if (result?.flatCsvPath && api) api.openExternal(result.flatCsvPath);
+  };
+
+  const handleOpenXLSX = () => {
+    const api = window.electron || window.electronAPI;
+    if (result?.xlsxPath && api) api.openExternal(result.xlsxPath);
   };
 
   const handleCreateCorrectedXml = async () => {
@@ -493,6 +428,9 @@ const ResultsExport: React.FC = () => {
                       setFileName('');
                       setFilePath('');
                       setXmlCheckResult(null);
+                      setPredictedGroups([]);
+                      setGroupOverrides(new Map());
+                      setParsedResults([]);
                     }}
                   >
                     Clear
@@ -574,6 +512,84 @@ const ResultsExport: React.FC = () => {
             </Card>
           )}
 
+          {/* Group Validation */}
+          {predictedGroups.length > 0 && (
+            <Card type="inner" title="Group / Solo Validation">
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Alert
+                  message={`${predictedGroups.length} entr${predictedGroups.length === 1 ? 'y' : 'ies'} predicted as Group`}
+                  description="These entries have no year of birth or sex in the XML. Please confirm whether each is a Group or Solo individual."
+                  type="info"
+                  showIcon
+                  icon={<WarningOutlined />}
+                />
+                <Space wrap>
+                  <Button
+                    size="small"
+                    icon={<TeamOutlined />}
+                    onClick={() => {
+                      const updated = new Map(groupOverrides);
+                      predictedGroups.forEach(p => updated.set(p.key, true));
+                      setGroupOverrides(updated);
+                    }}
+                  >
+                    All Group
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<UserOutlined />}
+                    onClick={() => {
+                      const updated = new Map(groupOverrides);
+                      predictedGroups.forEach(p => updated.set(p.key, false));
+                      setGroupOverrides(updated);
+                    }}
+                  >
+                    All Solo
+                  </Button>
+                </Space>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={predictedGroups}
+                  renderItem={(pg) => {
+                    const isGroup = groupOverrides.get(pg.key) ?? true;
+                    return (
+                      <List.Item
+                        actions={[
+                          <Button
+                            key="toggle"
+                            size="small"
+                            type={isGroup ? 'primary' : 'default'}
+                            icon={isGroup ? <TeamOutlined /> : <UserOutlined />}
+                            onClick={() => {
+                              const updated = new Map(groupOverrides);
+                              updated.set(pg.key, !isGroup);
+                              setGroupOverrides(updated);
+                            }}
+                          >
+                            {isGroup ? 'Group' : 'Solo'}
+                          </Button>
+                        ]}
+                      >
+                        <List.Item.Meta
+                          title={
+                            <span>
+                              <Tag color="blue">{pg.className}</Tag>
+                              <Text strong>{pg.name}</Text>
+                              {' '}
+                              <Tag color={isGroup ? 'orange' : 'green'}>{isGroup ? 'Group' : 'Solo'}</Tag>
+                            </span>
+                          }
+                          description={<Text type="secondary">{pg.reason}</Text>}
+                        />
+                      </List.Item>
+                    );
+                  }}
+                />
+              </Space>
+            </Card>
+          )}
+
           {/* Generate Button */}
           <Card type="inner" title="2. Generate Outputs">
             <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -601,48 +617,38 @@ const ResultsExport: React.FC = () => {
                 </Button>
               </div>
 
-              {/* Flat CSV Export */}
+              {/* Flat Results Export */}
               <div>
-                <Paragraph strong>Flat Results CSV</Paragraph>
+                <Paragraph strong>Flat Results Export</Paragraph>
                 <Paragraph type="secondary">
-                  Export a simple CSV with: Last Name, First Name, Year of Birth, Sex, Club,
-                  Group/Solo, Finishing Time (Excel decimal), Place, and Course.
-                  Time is stored as a decimal fraction of a day. In Excel, format the Time column
-                  as [m]:ss to display elapsed minutes and seconds.
+                  Export results with: Last Name, First Name, Year of Birth, Sex, Club,
+                  Group/Solo, Finishing Time, Place, Status, and Course.
                 </Paragraph>
 
-                <Button
-                  type="default"
-                  size="large"
-                  icon={<TableOutlined />}
-                  onClick={handleGenerateFlatCSV}
-                  loading={loading}
-                  disabled={fileList.length === 0 || !eventInfo}
-                  block
-                >
-                  Export Flat Results CSV
-                </Button>
-              </div>
-
-              {/* CSV Generation with Database Validation */}
-              <div>
-                <Paragraph strong>CSV for Database Upload</Paragraph>
-                <Paragraph type="secondary">
-                  Generate a pipe-delimited CSV file for uploading to your club database.
-                  Runner names, birth years, and clubs will be validated against your local database.
-                </Paragraph>
-
-                <Button
-                  type="default"
-                  size="large"
-                  icon={<DatabaseOutlined />}
-                  onClick={handleGenerateCSV}
-                  loading={loading}
-                  disabled={fileList.length === 0 || !eventInfo}
-                  block
-                >
-                  Generate CSV with Database Validation
-                </Button>
+                <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                  <Button
+                    type="default"
+                    size="large"
+                    icon={<TableOutlined />}
+                    onClick={handleGenerateFlatCSV}
+                    loading={loading}
+                    disabled={fileList.length === 0 || !eventInfo}
+                    block
+                  >
+                    Export as CSV
+                  </Button>
+                  <Button
+                    type="default"
+                    size="large"
+                    icon={<FileExcelOutlined />}
+                    onClick={handleGenerateXLSX}
+                    loading={loading}
+                    disabled={fileList.length === 0 || !eventInfo}
+                    block
+                  >
+                    Export as XLSX
+                  </Button>
+                </Space>
               </div>
 
               {loading && (
@@ -684,20 +690,20 @@ const ResultsExport: React.FC = () => {
                             <br />
                           </>
                         )}
-                        {result.csvPath && (
-                          <>
-                            <Text strong>Results CSV:</Text>
-                            <br />
-                            <Text code>{result.csvPath}</Text>
-                            <br />
-                            <br />
-                          </>
-                        )}
                         {result.flatCsvPath && (
                           <>
                             <Text strong>Flat Results CSV:</Text>
                             <br />
                             <Text code>{result.flatCsvPath}</Text>
+                            <br />
+                            <br />
+                          </>
+                        )}
+                        {result.xlsxPath && (
+                          <>
+                            <Text strong>Results XLSX:</Text>
+                            <br />
+                            <Text code>{result.xlsxPath}</Text>
                           </>
                         )}
                       </div>
@@ -718,14 +724,14 @@ const ResultsExport: React.FC = () => {
                         Open Splits
                       </Button>
                     )}
-                    {result.csvPath && (
-                      <Button type="default" onClick={handleOpenCSV}>
+                    {result.flatCsvPath && (
+                      <Button type="default" onClick={handleOpenFlatCSV}>
                         Open CSV
                       </Button>
                     )}
-                    {result.flatCsvPath && (
-                      <Button type="default" onClick={handleOpenFlatCSV}>
-                        Open Flat CSV
+                    {result.xlsxPath && (
+                      <Button type="default" onClick={handleOpenXLSX}>
+                        Open XLSX
                       </Button>
                     )}
                     <Button
@@ -737,6 +743,9 @@ const ResultsExport: React.FC = () => {
                         setFileName('');
                         setFilePath('');
                         setXmlCheckResult(null);
+                        setPredictedGroups([]);
+                        setGroupOverrides(new Map());
+                        setParsedResults([]);
                       }}
                     >
                       Generate Another
@@ -775,29 +784,6 @@ const ResultsExport: React.FC = () => {
         </Space>
       </Card>
 
-      {/* CSV Review Modal */}
-      <Modal
-        open={showCSVReview}
-        onCancel={handleCSVReviewCancel}
-        footer={null}
-        width="95%"
-        style={{ top: 20 }}
-        destroyOnClose
-      >
-        {showCSVReview && validationResult && (
-          <Suspense fallback={
-            <Spin tip="Loading CSV review...">
-              <div style={{ minHeight: 120 }} />
-            </Spin>
-          }>
-            <CSVReviewAndFix
-              validationResult={validationResult}
-              onComplete={handleCSVReviewComplete}
-              onCancel={handleCSVReviewCancel}
-            />
-          </Suspense>
-        )}
-      </Modal>
     </div>
   );
 };

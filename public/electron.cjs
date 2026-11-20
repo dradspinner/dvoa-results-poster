@@ -136,14 +136,21 @@ ipcMain.handle('read-file', async (event, filePath) => {
   }
 });
 
-ipcMain.handle('show-save-dialog', async (event, options) => {
-  const result = await dialog.showSaveDialog(mainWindow, options);
-  return result;
-});
-
 ipcMain.handle('show-open-dialog', async (event, options) => {
   const result = await dialog.showOpenDialog(mainWindow, options);
   return result;
+});
+
+// Binary file operations (for XLSX export)
+ipcMain.handle('save-binary-file', async (event, filePath, base64Content) => {
+  try {
+    const fs = require('fs').promises;
+    const buffer = Buffer.from(base64Content, 'base64');
+    await fs.writeFile(filePath, buffer);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 // Shell operations
@@ -153,28 +160,5 @@ ipcMain.handle('open-external', async (event, filePath) => {
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
-  }
-});
-
-// Runner database file operations
-ipcMain.handle('save-runner-database', async (event, filePath, content) => {
-  try {
-    const fs = require('fs').promises;
-    const dir = path.dirname(filePath);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(filePath, content, 'utf8');
-    return true;
-  } catch (error) {
-    return false;
-  }
-});
-
-ipcMain.handle('load-runner-database', async (event, filePath) => {
-  try {
-    const fs = require('fs').promises;
-    const content = await fs.readFile(filePath, 'utf8');
-    return content;
-  } catch (error) {
-    return null;
   }
 });

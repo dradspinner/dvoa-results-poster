@@ -95,7 +95,7 @@ class XmlCheckerService {
         // MeOS groups already have empty Family — nothing to fix
         if (family === '' && given !== '') return;
 
-        // Detect OE12-style groups
+        // Detect OE12-style groups (only relevant for OE12-sourced files)
         const issue = this.detectOE12Group(family, given, hasBirthDate, hasId, hasContact, className);
         if (issue) {
           groupIssues.push(issue);
@@ -108,7 +108,7 @@ class XmlCheckerService {
     if (isValid) {
       summary = `Source: ${source}. XML structure is valid — no group conversion needed.`;
     } else {
-      summary = `Source: ${source}. Found ${groupIssues.length} group entr${groupIssues.length === 1 ? 'y' : 'ies'} in OE12 format that need conversion to work correctly.`;
+      summary = `Source: ${source}. Found ${groupIssues.length} entr${groupIssues.length === 1 ? 'y' : 'ies'} that appear to be groups but are encoded as individuals. Use "Create Corrected Copy" to fix the XML structure.`;
     }
 
     return { source, sourceDetail: detail, isValid, groupIssues, summary };

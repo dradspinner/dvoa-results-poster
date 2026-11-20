@@ -5,26 +5,19 @@
  */
 
 export interface RunnerResult {
-  id: string;
   name: string;
   club: string;
   status: string;
-  startTime: string; // in 1/10 seconds
-  runTime: string; // in 1/10 seconds
+  runTime: string; // seconds
   place: string;
   splits?: Split[];
-  // Score-O fields
   score?: number;
   penalty?: number;
-  // Additional fields for CSV export
   firstName?: string;
   lastName?: string;
   yearOfBirth?: number;
   sex?: string;
   cardNumber?: string;
-  startTime_raw?: string; // HH:MM:SS format
-  finishTime_raw?: string; // HH:MM:SS format
-  nationality?: string; // Nationality code from XML ("0" = group)
 }
 
 export interface Split {
@@ -45,13 +38,15 @@ export interface ClassResult {
   runners: RunnerResult[];
 }
 
-export interface NegativeSplitIssue {
-  runnerName: string;
+export interface PredictedGroup {
+  /** Unique key: className|firstName|lastName */
+  key: string;
+  /** Display name */
+  name: string;
+  /** Course / class name */
   className: string;
-  controlCode: string;
-  legTime: number;
-  previousTime: number;
-  currentTime: number;
+  /** Why we think it's a group */
+  reason: string;
 }
 
 // Course color order as per user rules
@@ -112,14 +107,10 @@ class ResultsExportService {
         const timeText = resultElement.querySelector('Time')?.textContent?.trim() || '0';
         const position = resultElement.querySelector('Position')?.textContent?.trim() || '';
         
-        // Extract additional CSV fields
+        // Extract additional fields
         const birthDate = personElement.querySelector('BirthDate')?.textContent?.trim();
         const sex = personElement.querySelector('sex')?.textContent || personElement.getAttribute('sex');
-        const controlCard = resultElement.querySelector('ControlCard')?.textContent?.trim();
-        const startTimeElement = resultElement.querySelector('StartTime');
-        const finishTimeElement = resultElement.querySelector('FinishTime');
-        const nationalityEl = personElement.querySelector('Nationality');
-        const nationalityCode = nationalityEl?.getAttribute('code')?.trim() || '';
+        const cardNumber = resultElement.querySelector('ControlCard')?.textContent?.trim();
         
         // Extract year from birth date if available
         let yearOfBirth: number | undefined;
@@ -153,11 +144,9 @@ class ResultsExportService {
         }
         
         runners.push({
-          id: `${classId}_${position}`,
           name,
           club,
           status,
-          startTime: '0',
           runTime: timeText,
           place: position,
           splits: splits.length > 0 ? splits : undefined,
@@ -167,10 +156,7 @@ class ResultsExportService {
           lastName: familyName,
           yearOfBirth,
           sex: sex?.toUpperCase(),
-          cardNumber: controlCard,
-          startTime_raw: startTimeElement?.textContent?.trim(),
-          finishTime_raw: finishTimeElement?.textContent?.trim(),
-          nationality: nationalityCode
+          cardNumber: cardNumber || undefined,
         });
       });
       
@@ -1008,220 +994,135 @@ tr#fix { background-color: #E0FFFF; }
   }
 
   /**
-   * Detect negative splits in results
-   * Returns array of issues where cumulative time decreases between controls
+   * Detect entries that our heuristic predicts are groups but have no
+   * structural confirmation. These need user validation before export.
    */
-  detectNegativeSplits(classResults: ClassResult[]): NegativeSplitIssue[] {
-    const issues: NegativeSplitIssue[] = [];
-    
-    for (const classResult of classResults) {
-      for (const runner of classResult.runners) {
-        // Only check runners with OK status who have splits
-        if (runner.status !== 'OK' || !runner.splits || runner.splits.length === 0) {
-          continue;
-        }
-        
-        // Check each split against the previous one
-        for (let i = 1; i < runner.splits.length; i++) {
-          const prevSplit = runner.splits[i - 1];
-          const currSplit = runner.splits[i];
-          
-          const prevTime = parseInt(prevSplit.time);
-          const currTime = parseInt(currSplit.time);
-          
-          // Negative split: current cumulative time is less than previous
-          if (currTime < prevTime) {
-            const legTime = currTime - prevTime; // Will be negative
-            issues.push({
-              runnerName: runner.name,
-              className: classResult.className,
-              controlCode: currSplit.controlCode,
-              legTime,
-              previousTime: prevTime,
-              currentTime: currTime
-            });
-          }
-        }
-      }
-    }
-    
-    return issues;
-  }
-  
-  /**
-   * Generate OE12-format CSV for database upload
-   * Uses comma delimiter to match OE12 export format
-   * Filters out DNS (Did Not Start) entries
-   */
-  generateCSV(
-    classResults: ClassResult[],
-    correctedData: Map<string, { firstName: string; lastName: string; yearOfBirth?: number; club?: string }>
-  ): string {
-    const lines: string[] = [];
-    
-    // Header row (NO line number prefix in OE12 format)
-    lines.push('OE0012_V12,Entry Id,Stno,XStno,Chipno,Database Id,IOF Id,Surname,First name,Birthdate,YB,S,Block,nc,Start,Finish,Time,Classifier,Credit -,Penalty +,Comment,Club no.,Cl.name,City,Nat,Location,Region,Cl. no.,Short,Long,Entry cl. No,Entry class (short),Entry class (long),Rank,Ranking points,Num1,Num2,Num3,Text1,Text2,Text3,Addr. surname,Addr. first name,Street,Line2,Zip,Addr. city,Phone,Mobile,Fax,EMail,Rented,Start fee,Paid,Team id,Team name,Person Nat,Course no.,Course,km,m,Course controls,Place,');
-    
-    // Process each class
-    for (const classResult of classResults) {
-      for (const runner of classResult.runners) {
-        // Skip DNS (Did Not Start) entries
-        if (runner.status === 'DidNotStart' || runner.status === 'DNS') {
-          continue;
-        }
-        // Get corrected data if available
-        const runnerId = `${runner.firstName}_${runner.lastName}`;
-        const corrected = correctedData.get(runnerId);
-        
-        const firstName = corrected?.firstName || runner.firstName || '';
-        const lastName = corrected?.lastName || runner.lastName || '';
-        const yearOfBirth = corrected?.yearOfBirth || runner.yearOfBirth;
-        const club = corrected?.club || runner.club || '';
-        
-        // Format times - OE12 uses simple time format (h:mm:ss or hh:mm:ss)
-        const startTime = this.formatTimeForOE12(runner.startTime_raw);
-        const finishTime = this.formatTimeForOE12(runner.finishTime_raw);
-        const runTime = runner.status === 'OK' && runner.runTime ? this.formatTimeForCSV(runner.runTime) : '';
-        
-        // Calculate classifier (0=OK, 2=MP/DNF, 3=DNS)
-        let classifier = '0';
-        if (runner.status === 'MissingPunch' || runner.status === 'MP') classifier = '2';
-        else if (runner.status === 'DidNotStart' || runner.status === 'DNS') classifier = '3';
-        else if (runner.status === 'DidNotFinish' || runner.status === 'DNF') classifier = '2';
-        else if (runner.status !== 'OK') classifier = '0';
-        
-        // Build the row fields (NO line number prefix)
-        const fields = [
-          '',  // OE0012_V12 column (empty for data rows)
-          '',  // Entry Id
-          '',  // Stno
-          '',  // XStno
-          runner.cardNumber || '',  // Chipno
-          '""',  // Database Id (quoted empty in OE12)
-          '""',  // IOF Id (quoted empty)
-          `"${lastName}"`,  // Surname (quoted)
-          `"${firstName}"`,  // First name (quoted)
-          '',  // Birthdate (full date - empty)
-          yearOfBirth || '',  // YB (no quotes, just number or empty)
-          runner.sex || '',  // S (sex - M or F, no quotes)
-          '',  // Block
-          runner.status === 'NotCompeting' ? 'X' : '0',  // nc - X for NotCompeting, 0 otherwise
-          startTime,  // Start (h:mm:ss format)
-          finishTime,  // Finish (h:mm:ss format)
-          runTime,  // Time (m:ss or h:mm:ss format)
-          classifier,  // Classifier (0=OK, 2=MP/DNF, 3=DNS)
-          '',  // Credit -
-          '',  // Penalty +
-          '""',  // Comment (quoted empty)
-          '',  // Club no. (empty, no quotes in reference)
-          '""',  // Cl.name (quoted empty)
-          `"${club}"`,  // City (quoted, we use this for club name)
-          '""',  // Nat (quoted empty)
-          '""',  // Location (quoted empty)
-          '""',  // Region (quoted empty)
-          classResult.classId || '',  // Cl. no.
-          `"${classResult.className}"`,  // Short (quoted)
-          `"${classResult.className}"`,  // Long (quoted)
-          '',  // Entry cl. No
-          '""',  // Entry class (short) (quoted empty)
-          '""',  // Entry class (long) (quoted empty)
-          '',  // Rank
-          '',  // Ranking points
-          '',  // Num1
-          '',  // Num2
-          '',  // Num3
-          '""',  // Text1 (quoted empty)
-          '""',  // Text2 (quoted empty)
-          '""',  // Text3 (quoted empty)
-          '""',  // Addr. surname (quoted empty)
-          '""',  // Addr. first name (quoted empty)
-          '""',  // Street (quoted empty)
-          '""',  // Line2 (quoted empty)
-          '""',  // Zip (quoted empty)
-          '""',  // Addr. city (quoted empty)
-          '',  // Phone (empty, no quotes)
-          '""',  // Mobile (quoted empty)
-          '""',  // Fax (quoted empty)
-          '""',  // EMail (quoted empty)
-          '0',  // Rented (0 or X, no quotes)
-          '"0.00"',  // Start fee (quoted)
-          'X',  // Paid (X or 0, no quotes)
-          '',  // Team id
-          '""',  // Team name (quoted empty)
-          '""',  // Person Nat (quoted empty)
-          classResult.courseId || '',  // Course no.
-          classResult.courseName || classResult.className,  // Course (no quotes)
-          classResult.courseLength ? `"${(classResult.courseLength / 1000).toFixed(1)}"` : '',  // km (quoted)
-          classResult.courseClimb?.toString() || '',  // m (no quotes)
-          classResult.courseControls?.toString() || '',  // Course controls (no quotes)
-          runner.place || '',  // Place (no quotes)
-          ''  // Final empty field (trailing comma)
-        ];
-        
-        // NO line number prefix - just comma-separated fields
-        lines.push(fields.join(','));
-      }
-    }
-    return lines.join('\r\n');
-  }
-  
-  /**
-   * Generate flat CSV for spreadsheet import (Pepe's format).
-   * Simple comma-delimited with columns:
-   * Last Name, First Name, Year of Birth, Sex, Club, Group/Solo, Time, Place, Course
-   *
-   * Time is output as an Excel-compatible decimal (fraction of a 24-hour day)
-   * Format the numeric column as [m]:ss in Excel to display elapsed minutes and seconds.
-   */
-  generateFlatCSV(classResults: ClassResult[]): string {
-    const lines: string[] = [];
-
-    // Header
-    lines.push('Last Name,First Name,Year of Birth,Sex,Club,Group/Solo,Time,Place,Course');
-
-    for (const classResult of classResults) {
-      for (const runner of classResult.runners) {
-        // Skip DNS entries
-        if (runner.status === 'DidNotStart' || runner.status === 'DNS') {
-          continue;
-        }
-
+  detectPredictedGroups(classResults: ClassResult[]): PredictedGroup[] {
+    const predictions: PredictedGroup[] = [];
+    for (const cr of classResults) {
+      for (const runner of cr.runners) {
         const lastName = runner.lastName || '';
         const firstName = runner.firstName || '';
-        const yob = runner.yearOfBirth ? runner.yearOfBirth.toString() : '';
-        const sex = runner.sex || '';
-        const club = runner.club || '';
 
-        // Group/Solo: Nationality code "0" means group in MeOS.
-        // Missing birth year or nationality alone does not identify a group.
-        const isGroup = runner.nationality === '0';
-        const groupSolo = isGroup ? 'Group' : 'Solo';
+        // Skip if structurally a MeOS group (empty Family + non-empty Given)
+        if (lastName === '' && firstName !== '') continue;
 
-        // Finishing time as Excel decimal (seconds / 86400).
-        // Only for finishers with a valid run time.
-        let timeDecimal = '';
+        // Skip if definitely solo (has birth year or sex)
+        if (runner.yearOfBirth || runner.sex) continue;
+
+        // Remaining: no YOB, no sex, non-empty lastName — predicted group, needs validation
+        const key = `${cr.className}|${firstName}|${lastName}`;
+        predictions.push({
+          key,
+          name: `${firstName} ${lastName}`.trim(),
+          className: cr.className,
+          reason: 'No year of birth or sex in XML data',
+        });
+      }
+    }
+    return predictions;
+  }
+
+  /** Build a unique runner key matching the format used by groupOverrides. */
+  private runnerKey(className: string, runner: RunnerResult): string {
+    return `${className}|${runner.firstName || ''}|${runner.lastName || ''}`;
+  }
+
+  /** Determine group/solo for a single runner, respecting user overrides. */
+  private isRunnerGroup(
+    runner: RunnerResult,
+    className: string,
+    groupOverrides?: Map<string, boolean>,
+  ): boolean {
+    const key = this.runnerKey(className, runner);
+    if (groupOverrides?.has(key)) return groupOverrides.get(key)!;
+
+    // Default detection:
+    //  1. Empty last name with non-empty first name (MeOS structural group encoding)
+    //  2. No year of birth AND no sex (heuristic — shown for validation when possible)
+    const lastName = runner.lastName || '';
+    const firstName = runner.firstName || '';
+    return (lastName === '' && firstName !== '') ||
+      (!runner.yearOfBirth && !runner.sex);
+  }
+
+  /**
+   * Build flat row data used by both CSV and XLSX exports.
+   * Returns typed values: numbers stay as numbers so XLSX can format them.
+   */
+  buildFlatRowData(
+    classResults: ClassResult[],
+    groupOverrides?: Map<string, boolean>,
+  ): { headers: string[]; rows: (string | number | null)[][] } {
+    const headers = [
+      'Last Name', 'First Name', 'Year of Birth', 'Sex',
+      'Club', 'Group/Solo', 'Time', 'Place', 'Status', 'Course',
+    ];
+    const rows: (string | number | null)[][] = [];
+
+    for (const cr of classResults) {
+      for (const runner of cr.runners) {
+        const groupSolo = this.isRunnerGroup(runner, cr.className, groupOverrides)
+          ? 'Group' : 'Solo';
+
+        let timeDecimal: number | null = null;
         if (runner.status === 'OK' && runner.runTime.trim()) {
           const seconds = Number(runner.runTime);
           if (Number.isFinite(seconds) && seconds >= 0) {
-            timeDecimal = (seconds / 86400).toFixed(10);
+            timeDecimal = seconds / 86400;
           }
         }
 
-        // Place: numeric for valid finishers, blank otherwise
-        const place = runner.status === 'OK' && /^[1-9]\d*$/.test(runner.place.trim())
-          ? runner.place.trim()
-          : '';
+        let place: number | null = null;
+        if (runner.status === 'OK' && /^[1-9]\d*$/.test(runner.place.trim())) {
+          place = parseInt(runner.place.trim());
+        }
 
-        const course = classResult.className;
+        let status = '';
+        if (runner.status === 'MissingPunch') status = 'MP';
+        else if (runner.status === 'DidNotFinish') status = 'DNF';
+        else if (runner.status === 'DidNotStart') status = 'DNS';
+        else if (runner.status !== 'OK') status = runner.status;
 
-        lines.push(
-          [lastName, firstName, yob, sex, club, groupSolo, timeDecimal, place, course]
-            .map(value => this.csvEscape(value))
-            .join(',')
-        );
+        rows.push([
+          runner.lastName || '',
+          runner.firstName || '',
+          runner.yearOfBirth ?? null,
+          runner.sex || '',
+          runner.club || '',
+          groupSolo,
+          timeDecimal,
+          place,
+          status,
+          cr.className,
+        ]);
       }
     }
+    return { headers, rows };
+  }
 
+  /**
+   * Generate flat CSV for spreadsheet import.
+   * Time is output as an Excel-compatible decimal (fraction of a 24-hour day).
+   */
+  generateFlatCSV(
+    classResults: ClassResult[],
+    groupOverrides?: Map<string, boolean>,
+  ): string {
+    const { headers, rows } = this.buildFlatRowData(classResults, groupOverrides);
+    const lines: string[] = [headers.join(',')];
+
+    for (const row of rows) {
+      lines.push(
+        row.map(cell => {
+          if (cell === null) return '';
+          const str = typeof cell === 'number'
+            ? (Number.isInteger(cell) ? cell.toString() : cell.toFixed(10))
+            : cell;
+          return this.csvEscape(str);
+        }).join(',')
+      );
+    }
     return lines.join('\r\n');
   }
 
@@ -1235,47 +1136,6 @@ tr#fix { background-color: #E0FFFF; }
     return value;
   }
 
-  /**
-   * Format time for CSV (h:mm:ss format matching OE12)
-   */
-  private formatTimeForCSV(timeInSeconds: string): string {
-    const seconds = parseInt(timeInSeconds);
-    if (isNaN(seconds) || seconds === 0) return '';
-    
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    } else {
-      return `${minutes}:${secs.toString().padStart(2, '0')}`;
-    }
-  }
-  
-  /**
-   * Format ISO timestamp to OE12 simple time format (h:mm:ss or hh:mm:ss)
-   * Input: "2025-11-15T12:20:09.000" or similar ISO format
-   * Output: "12:20:09" (simple time without date)
-   */
-  private formatTimeForOE12(isoTimestamp?: string): string {
-    if (!isoTimestamp) return '';
-    
-    try {
-      // Extract time portion from ISO timestamp
-      // Format: 2025-11-15T12:20:09.000 -> 12:20:09
-      const timeMatch = isoTimestamp.match(/T(\d{1,2}):(\d{2}):(\d{2})/);
-      if (timeMatch) {
-        const hours = parseInt(timeMatch[1]);
-        const minutes = timeMatch[2];
-        const seconds = timeMatch[3];
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      return '';
-    } catch {
-      return '';
-    }
-  }
 }
 
 export const resultsExportService = new ResultsExportService();

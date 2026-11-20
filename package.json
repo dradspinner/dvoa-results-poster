@@ -21,7 +21,7 @@
     "electron-is-dev": "^2.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "sql.js": "^1.13.0"
+    "xlsx": "^0.18.5"
   },
   "main": "public/electron.cjs",
   "homepage": "./",
@@ -61,7 +61,6 @@
     "@types/node": "^24.5.1",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
-    "@types/sql.js": "^1.4.9",
     "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^8.2.2",
     "electron": "^45.4.1",
