@@ -276,8 +276,8 @@ const ResultsExport: React.FC = () => {
       const wsData = [headers, ...rows.map(row => row.map(cell => cell === null ? '' : cell))];
       const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-      // Format the Time column (index 6) as [h]:mm:ss for rows with numeric values
-      const timeCol = 6;
+      // Format the Time column (index 7) as [h]:mm:ss for rows with numeric values
+      const timeCol = 7;
       for (let r = 1; r <= rows.length; r++) {
         const cellRef = XLSX.utils.encode_cell({ r, c: timeCol });
         if (ws[cellRef] && typeof ws[cellRef].v === 'number') {

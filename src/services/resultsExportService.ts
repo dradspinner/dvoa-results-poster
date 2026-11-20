@@ -1056,7 +1056,7 @@ tr#fix { background-color: #E0FFFF; }
   ): { headers: string[]; rows: (string | number | null)[][] } {
     const headers = [
       'Last Name', 'First Name', 'Year of Birth', 'Sex',
-      'Club', 'Group/Solo', 'Time', 'Place', 'Status', 'Course',
+      'Club', 'Chip #', 'Group/Solo', 'Time', 'Place', 'Status', 'Course',
     ];
     const rows: (string | number | null)[][] = [];
 
@@ -1090,6 +1090,7 @@ tr#fix { background-color: #E0FFFF; }
           runner.yearOfBirth ?? null,
           runner.sex || '',
           runner.club || '',
+          runner.cardNumber || '',
           groupSolo,
           timeDecimal,
           place,
