@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useState } from 'react';
 import { Card, Button, Space, Alert, Typography, Progress, message, Modal, List, Tag, Spin } from 'antd';
-import { UploadOutlined, FileTextOutlined, CheckCircleOutlined, WarningOutlined, GlobalOutlined, DatabaseOutlined, ToolOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileTextOutlined, CheckCircleOutlined, WarningOutlined, GlobalOutlined, DatabaseOutlined, ToolOutlined, TableOutlined } from '@ant-design/icons';
 import { resultsExportService, ClassResult, NegativeSplitIssue } from '../services/resultsExportService';
 import type { RunnerValidation } from '../services/csvValidationService';
 import { xmlCheckerService, XmlCheckResult } from '../services/xmlCheckerService';
@@ -14,6 +14,7 @@ interface GenerationResult {
   resultsPath?: string;
   splitsPath?: string;
   csvPath?: string;
+  flatCsvPath?: string;
   error?: string;
 }
 
@@ -335,6 +336,72 @@ const ResultsExport: React.FC = () => {
     setValidationResult(null);
   };
 
+  const handleGenerateFlatCSV = async () => {
+    if (fileList.length === 0 || !fileContent) {
+      message.warning('Please select an XML file first');
+      return;
+    }
+
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const results = resultsExportService.parseOE12XML(fileContent);
+      const csvContent = resultsExportService.generateFlatCSV(results);
+
+      const flatCsvFileName = fileName.replace(/\.xml$/i, '').replace(/-/g, '_') + '_flat.csv';
+      const flatCsvOutputPath = filePath.replace(/[^\\/]+$/, () => flatCsvFileName);
+
+      if (window.electron) {
+        const saved = await window.electron.saveFile(flatCsvOutputPath, csvContent);
+        if (saved.success) {
+          setResult({ success: true, flatCsvPath: flatCsvOutputPath });
+          message.success('Flat CSV generated successfully!');
+        } else {
+          throw new Error(saved.error || 'Failed to save flat CSV file');
+        }
+      } else if (window.electronAPI) {
+        const saved = await window.electronAPI.saveFile(flatCsvOutputPath, csvContent);
+        if (saved.success) {
+          setResult({ success: true, flatCsvPath: flatCsvOutputPath });
+          message.success('Flat CSV generated successfully!');
+        } else {
+          throw new Error(saved.error || 'Failed to save flat CSV file');
+        }
+      } else {
+        // Browser fallback
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = flatCsvFileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        setResult({ success: true, flatCsvPath: link.download });
+        message.success('Flat CSV downloaded!');
+      }
+    } catch (error) {
+      console.error('Error generating flat CSV:', error);
+      setResult({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate flat CSV'
+      });
+      message.error('Failed to generate flat CSV');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenFlatCSV = () => {
+    if (result?.flatCsvPath && window.electron) {
+      window.electron.openExternal(result.flatCsvPath);
+    } else if (result?.flatCsvPath && window.electronAPI) {
+      window.electronAPI.openExternal(result.flatCsvPath);
+    }
+  };
+
   const handleCreateCorrectedXml = async () => {
     if (!xmlCheckResult || !fileContent) return;
 
@@ -534,6 +601,29 @@ const ResultsExport: React.FC = () => {
                 </Button>
               </div>
 
+              {/* Flat CSV Export */}
+              <div>
+                <Paragraph strong>Flat Results CSV</Paragraph>
+                <Paragraph type="secondary">
+                  Export a simple CSV with: Last Name, First Name, Year of Birth, Sex, Club,
+                  Group/Solo, Finishing Time (Excel decimal), Place, and Course.
+                  Time is stored as a decimal fraction of a day. In Excel, format the Time column
+                  as [m]:ss to display elapsed minutes and seconds.
+                </Paragraph>
+
+                <Button
+                  type="default"
+                  size="large"
+                  icon={<TableOutlined />}
+                  onClick={handleGenerateFlatCSV}
+                  loading={loading}
+                  disabled={fileList.length === 0 || !eventInfo}
+                  block
+                >
+                  Export Flat Results CSV
+                </Button>
+              </div>
+
               {/* CSV Generation with Database Validation */}
               <div>
                 <Paragraph strong>CSV for Database Upload</Paragraph>
@@ -599,6 +689,15 @@ const ResultsExport: React.FC = () => {
                             <Text strong>Results CSV:</Text>
                             <br />
                             <Text code>{result.csvPath}</Text>
+                            <br />
+                            <br />
+                          </>
+                        )}
+                        {result.flatCsvPath && (
+                          <>
+                            <Text strong>Flat Results CSV:</Text>
+                            <br />
+                            <Text code>{result.flatCsvPath}</Text>
                           </>
                         )}
                       </div>
@@ -622,6 +721,11 @@ const ResultsExport: React.FC = () => {
                     {result.csvPath && (
                       <Button type="default" onClick={handleOpenCSV}>
                         Open CSV
+                      </Button>
+                    )}
+                    {result.flatCsvPath && (
+                      <Button type="default" onClick={handleOpenFlatCSV}>
+                        Open Flat CSV
                       </Button>
                     )}
                     <Button

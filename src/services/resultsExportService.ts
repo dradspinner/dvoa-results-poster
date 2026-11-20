@@ -24,6 +24,7 @@ export interface RunnerResult {
   cardNumber?: string;
   startTime_raw?: string; // HH:MM:SS format
   finishTime_raw?: string; // HH:MM:SS format
+  nationality?: string; // Nationality code from XML ("0" = group)
 }
 
 export interface Split {
@@ -117,6 +118,8 @@ class ResultsExportService {
         const controlCard = resultElement.querySelector('ControlCard')?.textContent?.trim();
         const startTimeElement = resultElement.querySelector('StartTime');
         const finishTimeElement = resultElement.querySelector('FinishTime');
+        const nationalityEl = personElement.querySelector('Nationality');
+        const nationalityCode = nationalityEl?.getAttribute('code')?.trim() || '';
         
         // Extract year from birth date if available
         let yearOfBirth: number | undefined;
@@ -166,7 +169,8 @@ class ResultsExportService {
           sex: sex?.toUpperCase(),
           cardNumber: controlCard,
           startTime_raw: startTimeElement?.textContent?.trim(),
-          finishTime_raw: finishTimeElement?.textContent?.trim()
+          finishTime_raw: finishTimeElement?.textContent?.trim(),
+          nationality: nationalityCode
         });
       });
       
@@ -1161,6 +1165,76 @@ tr#fix { background-color: #E0FFFF; }
     return lines.join('\r\n');
   }
   
+  /**
+   * Generate flat CSV for spreadsheet import (Pepe's format).
+   * Simple comma-delimited with columns:
+   * Last Name, First Name, Year of Birth, Sex, Club, Group/Solo, Time, Place, Course
+   *
+   * Time is output as an Excel-compatible decimal (fraction of a 24-hour day)
+   * Format the numeric column as [m]:ss in Excel to display elapsed minutes and seconds.
+   */
+  generateFlatCSV(classResults: ClassResult[]): string {
+    const lines: string[] = [];
+
+    // Header
+    lines.push('Last Name,First Name,Year of Birth,Sex,Club,Group/Solo,Time,Place,Course');
+
+    for (const classResult of classResults) {
+      for (const runner of classResult.runners) {
+        // Skip DNS entries
+        if (runner.status === 'DidNotStart' || runner.status === 'DNS') {
+          continue;
+        }
+
+        const lastName = runner.lastName || '';
+        const firstName = runner.firstName || '';
+        const yob = runner.yearOfBirth ? runner.yearOfBirth.toString() : '';
+        const sex = runner.sex || '';
+        const club = runner.club || '';
+
+        // Group/Solo: Nationality code "0" means group in MeOS.
+        // Missing birth year or nationality alone does not identify a group.
+        const isGroup = runner.nationality === '0';
+        const groupSolo = isGroup ? 'Group' : 'Solo';
+
+        // Finishing time as Excel decimal (seconds / 86400).
+        // Only for finishers with a valid run time.
+        let timeDecimal = '';
+        if (runner.status === 'OK' && runner.runTime.trim()) {
+          const seconds = Number(runner.runTime);
+          if (Number.isFinite(seconds) && seconds >= 0) {
+            timeDecimal = (seconds / 86400).toFixed(10);
+          }
+        }
+
+        // Place: numeric for valid finishers, blank otherwise
+        const place = runner.status === 'OK' && /^[1-9]\d*$/.test(runner.place.trim())
+          ? runner.place.trim()
+          : '';
+
+        const course = classResult.className;
+
+        lines.push(
+          [lastName, firstName, yob, sex, club, groupSolo, timeDecimal, place, course]
+            .map(value => this.csvEscape(value))
+            .join(',')
+        );
+      }
+    }
+
+    return lines.join('\r\n');
+  }
+
+  /**
+   * Escape a value for CSV: wrap in quotes if it contains comma, quote, or newline
+   */
+  private csvEscape(value: string): string {
+    if (/[",\r\n]/.test(value)) {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
+    return value;
+  }
+
   /**
    * Format time for CSV (h:mm:ss format matching OE12)
    */
