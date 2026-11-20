@@ -10,6 +10,16 @@ export default defineConfig({
   assetsInclude: ['**/*.sql'], // Include SQL files as assets
   build: {
     assetsInlineLimit: 0, // Don't inline SQL files
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const modulePath = id.replace(/\\/g, '/')
+          if (/\/node_modules\/(react|react-dom|scheduler)\//.test(modulePath)) {
+            return 'react_vendor'
+          }
+        },
+      },
+    },
   },
   server: {
     port: 5175,

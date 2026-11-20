@@ -2,6 +2,7 @@
 // Manages runner database using sql.js (pure JavaScript SQLite)
 
 import initSqlJs, { Database } from 'sql.js';
+import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import schema from '../database/schema.sql?raw';
 
 export interface RunnerRecord {
@@ -59,7 +60,7 @@ class SQLiteRunnerDatabaseService {
     try {
       // Initialize sql.js
       this.SQL = await initSqlJs({
-        locateFile: (file) => `https://sql.js.org/dist/${file}`
+        locateFile: () => sqlWasmUrl
       });
 
       // Try to load existing database from localStorage

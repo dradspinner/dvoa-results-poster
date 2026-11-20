@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
-import { Card, Button, Space, Alert, Typography, Progress, message, Modal, List, Tag } from 'antd';
+import React, { Suspense, lazy, useState } from 'react';
+import { Card, Button, Space, Alert, Typography, Progress, message, Modal, List, Tag, Spin } from 'antd';
 import { UploadOutlined, FileTextOutlined, CheckCircleOutlined, WarningOutlined, GlobalOutlined, DatabaseOutlined, ToolOutlined } from '@ant-design/icons';
 import { resultsExportService, ClassResult, NegativeSplitIssue } from '../services/resultsExportService';
-import { csvValidationService, RunnerValidation } from '../services/csvValidationService';
+import type { RunnerValidation } from '../services/csvValidationService';
 import { xmlCheckerService, XmlCheckResult } from '../services/xmlCheckerService';
-import CSVReviewAndFix from './CSVReviewAndFix';
+
+const CSVReviewAndFix = lazy(() => import('./CSVReviewAndFix'));
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -255,6 +256,7 @@ const ResultsExport: React.FC = () => {
       
       // Validate against database
       message.info('Validating runner data against database...');
+      const { csvValidationService } = await import('../services/csvValidationService');
       const validation = await csvValidationService.validateResults(results);
       setValidationResult(validation);
       
@@ -274,6 +276,7 @@ const ResultsExport: React.FC = () => {
 
     try {
       // Build corrected data map
+      const { csvValidationService } = await import('../services/csvValidationService');
       const correctedData = new Map<string, { firstName: string; lastName: string; yearOfBirth?: number; club?: string }>();
       
       validations.forEach(validation => {
@@ -677,12 +680,18 @@ const ResultsExport: React.FC = () => {
         style={{ top: 20 }}
         destroyOnClose
       >
-        {validationResult && (
-          <CSVReviewAndFix
-            validationResult={validationResult}
-            onComplete={handleCSVReviewComplete}
-            onCancel={handleCSVReviewCancel}
-          />
+        {showCSVReview && validationResult && (
+          <Suspense fallback={
+            <Spin tip="Loading CSV review...">
+              <div style={{ minHeight: 120 }} />
+            </Spin>
+          }>
+            <CSVReviewAndFix
+              validationResult={validationResult}
+              onComplete={handleCSVReviewComplete}
+              onCancel={handleCSVReviewCancel}
+            />
+          </Suspense>
         )}
       </Modal>
     </div>

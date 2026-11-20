@@ -46,9 +46,11 @@
         }
       ],
       "icon": "public/icon.ico",
-      "publisherName": "DVOA",
       "verifyUpdateCodeSignature": false,
-      "sign": null
+      "signtoolOptions": {
+        "publisherName": "DVOA",
+        "sign": null
+      }
     },
     "portable": {
       "artifactName": "DVOA_Results_Poster.exe"
@@ -61,10 +63,10 @@
     "@types/sql.js": "^1.4.9",
     "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^8.2.2",
-    "electron": "^32.2.8",
-    "electron-builder": "^25.0.5",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
     "typescript": "~5.8.3",
-    "vite": "^7.1.2",
+    "vite": "^7.3.8",
     "wait-on": "^8.0.1"
   }
 }
