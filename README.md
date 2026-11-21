@@ -1,6 +1,6 @@
 # DVOA Results Poster
 
-Standalone Windows tool for posting orienteering event results online. Imports IOF 3.0 XML results files from MeOS or OE12 and generates HTML results pages, splits analysis, and flat data exports.
+Standalone Windows tool for posting orienteering event results online. Imports MeOS results (IOF 3.0 XML or OE2003 CSV) and generates HTML results pages, splits analysis, and flat data exports.
 
 ## Download
 
@@ -8,14 +8,24 @@ Grab the latest portable exe from [Releases](https://github.com/dradspinner/dvoa
 
 ## Features
 
-### XML Import & Validation
-- Imports IOF 3.0 XML from **MeOS** and **OE12**
-- Auto-detects source software
-- XML compatibility checker flags entries that appear to be groups but are encoded as individuals, with a one-click **Create Corrected Copy** option
+### Import Formats
+The app auto-detects the file format when loaded:
+
+| Format | Sex | Year of Birth | Recommended |
+|--------|-----|---------------|-------------|
+| **OE2003 CSV** (semicolon-delimited) | ✅ | ✅ (2-digit → 4-digit) | **Yes** — includes all fields |
+| **IOF 3.0 XML** | ❌ (omitted by MeOS) | ✅ | Use when CSV unavailable |
+
+**OE2003 CSV** is the recommended export from MeOS because it includes sex/gender data that MeOS deliberately omits from IOF 3.0 XML results exports for privacy reasons.
+
+In MeOS: **Competition → Export Result and Splits → Export type: OE2003 CSV**
+
+### Validation
+- **XML compatibility checker** flags entries that appear to be groups but are encoded as individuals, with a one-click **Create Corrected Copy** option (XML only)
 - **Group / Solo validation**: entries with no year of birth or sex are flagged for user confirmation before export. Toggle each entry between Group and Solo, or use bulk "All Group" / "All Solo" buttons.
 
 ### HTML Export
-Two HTML files are generated in the same directory as the input XML:
+Two HTML files are generated in the same directory as the input file:
 
 - **`_results.html`** — Professional results page with:
   - Automatic course color sorting (White → Yellow → Orange → Brown → Green → Red → Blue)
@@ -40,8 +50,8 @@ Export a flat results table for spreadsheet import. Available as both CSV and XL
 |---|--------|-------------|
 | 1 | Last Name | Family name |
 | 2 | First Name | Given name |
-| 3 | Year of Birth | 4-digit year (blank if not in XML) |
-| 4 | Sex | M or F (blank if not in XML) |
+| 3 | Year of Birth | 4-digit year (from CSV 2-digit YB or XML BirthDate) |
+| 4 | Sex | M or F (available in CSV; omitted from IOF 3.0 XML) |
 | 5 | Club | Organisation name from XML |
 | 6 | Chip # | SI card number from ControlCard element |
 | 7 | Group/Solo | "Group" or "Solo" — see detection logic below |
