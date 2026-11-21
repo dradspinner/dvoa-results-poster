@@ -208,6 +208,205 @@ class ResultsExportService {
   }
   
   /**
+   * Parse OE2003 CSV (semicolon-delimited, exported from MeOS).
+   * This format includes sex and year of birth which IOF 3.0 XML omits.
+   */
+  parseOE2003CSV(csvContent: string): ClassResult[] {
+    const lines = csvContent.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+
+    // Skip header row
+    const classMap = new Map<string, { classId: string; runners: RunnerResult[]; courseLength?: number; courseClimb?: number; courseControls?: number; courseName?: string }>();
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = this.splitCSVLine(lines[i], ';');
+      if (cols.length < 44) continue;
+
+      const surname = this.unquote(cols[3]);
+      const firstName = this.unquote(cols[4]);
+      const ybRaw = cols[5]?.trim();
+      const sex = cols[6]?.trim().toUpperCase() || undefined;
+      const chip = cols[1]?.trim() || undefined;
+      const club = this.unquote(cols[14]) || this.unquote(cols[15]) || '';
+      const className = this.unquote(cols[18]) || this.unquote(cols[19]) || '';
+      const classId = cols[17]?.trim() || '';
+      const timeStr = cols[11]?.trim() || '';
+      const classifier = cols[12]?.trim() || '0';
+      const place = cols[43]?.trim() || '';
+      const courseLengthRaw = cols[40]?.trim();
+      const courseClimbRaw = cols[41]?.trim();
+      const courseControlsRaw = cols[42]?.trim();
+      const courseName = this.unquote(cols[39]) || '';
+
+      // Convert 2-digit year to 4-digit
+      let yearOfBirth: number | undefined;
+      if (ybRaw && ybRaw !== '0') {
+        const yb = parseInt(ybRaw);
+        if (!isNaN(yb) && yb > 0) {
+          yearOfBirth = yb < 100 ? (yb <= 30 ? 2000 + yb : 1900 + yb) : yb;
+        }
+      }
+
+      // Convert HH:MM:SS to total seconds
+      const runTimeSeconds = this.hhmmssToSeconds(timeStr);
+
+      // Convert classifier: 0=OK, 1=DNS(?), 2=DNF, 3=MP
+      let status = 'OK';
+      if (classifier === '3' || classifier === 'MP') status = 'MissingPunch';
+      else if (classifier === '2' || classifier === 'DNF') status = 'DidNotFinish';
+      else if (classifier === '1' || classifier === 'DNS') status = 'DidNotStart';
+      else if (classifier === '4') status = 'Disqualified';
+      else if (classifier === '5') status = 'OverTime';
+      else if (runTimeSeconds === 0 && !place) status = 'DidNotFinish';
+
+      const name = `${firstName} ${surname}`.trim();
+
+      // Parse splits: columns 46+ in pairs (ControlN, PunchN)
+      const splits: Split[] = [];
+      for (let c = 46; c + 1 < cols.length; c += 2) {
+        const controlCode = cols[c]?.trim();
+        const punchTime = cols[c + 1]?.trim();
+        if (!controlCode || controlCode === '(may be more)') break;
+        if (!punchTime || punchTime === '-----') continue;
+        const cumSeconds = this.hhmmssToSeconds(punchTime);
+        if (cumSeconds > 0) {
+          splits.push({ controlCode, time: String(cumSeconds) });
+        }
+      }
+
+      // Add finish as final split for OK runners
+      if (splits.length > 0 && status === 'OK' && runTimeSeconds > 0) {
+        splits.push({ controlCode: 'F', time: String(runTimeSeconds) });
+      }
+
+      const runner: RunnerResult = {
+        name,
+        club,
+        status,
+        runTime: String(runTimeSeconds),
+        place: status === 'OK' ? place : '',
+        splits: splits.length > 0 ? splits : undefined,
+        firstName,
+        lastName: surname,
+        yearOfBirth,
+        sex: sex || undefined,
+        cardNumber: chip && chip !== '0' ? chip : undefined,
+      };
+
+      if (!classMap.has(className)) {
+        classMap.set(className, {
+          classId,
+          runners: [],
+          courseLength: courseLengthRaw ? Math.round(parseFloat(courseLengthRaw) * 1000) : undefined,
+          courseClimb: courseClimbRaw ? parseInt(courseClimbRaw) : undefined,
+          courseControls: courseControlsRaw ? parseInt(courseControlsRaw) : undefined,
+          courseName: courseName || undefined,
+        });
+      }
+      classMap.get(className)!.runners.push(runner);
+    }
+
+    // Build ClassResult array
+    const results: ClassResult[] = [];
+    classMap.forEach((data, className) => {
+      // Sort runners by place
+      data.runners.sort((a, b) => {
+        const placeA = parseInt(a.place) || 999;
+        const placeB = parseInt(b.place) || 999;
+        if (placeA !== placeB) return placeA - placeB;
+        return a.name.localeCompare(b.name);
+      });
+
+      results.push({
+        classId: data.classId,
+        className,
+        courseLength: data.courseLength,
+        courseClimb: data.courseClimb,
+        courseControls: data.courseControls,
+        courseName: data.courseName,
+        isScoreO: false,
+        runners: data.runners,
+      });
+    });
+
+    // Sort by course color order
+    results.sort((a, b) => {
+      const colorA = this.extractCourseColor(a.className);
+      const colorB = this.extractCourseColor(b.className);
+      if (colorA && colorB) {
+        const idxA = COURSE_COLOR_ORDER.indexOf(colorA);
+        const idxB = COURSE_COLOR_ORDER.indexOf(colorB);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      }
+      return a.className.localeCompare(b.className);
+    });
+
+    return results;
+  }
+
+  /** Convert HH:MM:SS or MM:SS to total seconds. Returns 0 for invalid. */
+  private hhmmssToSeconds(time: string): number {
+    if (!time || time === '-----') return 0;
+    const parts = time.split(':').map(Number);
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return 0;
+  }
+
+  /** Remove surrounding quotes from a CSV field. */
+  private unquote(val: string | undefined): string {
+    if (!val) return '';
+    const trimmed = val.trim();
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/""/g, '"');
+    }
+    return trimmed;
+  }
+
+  /** Split a CSV line respecting quoted fields. */
+  private splitCSVLine(line: string, sep: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          current += ch;
+        }
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === sep) {
+        result.push(current);
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current);
+    return result;
+  }
+
+  /**
+   * Auto-detect format and parse. Accepts IOF 3.0 XML or OE2003 CSV.
+   */
+  parseAuto(content: string): ClassResult[] {
+    const trimmed = content.trimStart();
+    if (trimmed.startsWith('<?xml') || trimmed.startsWith('<ResultList') || trimmed.startsWith('<')) {
+      return this.parseOE12XML(content);
+    }
+    return this.parseOE2003CSV(content);
+  }
+
+  /**
    * Extract course color from class name
    */
   private extractCourseColor(className: string): string | null {

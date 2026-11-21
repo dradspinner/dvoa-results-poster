@@ -42,9 +42,11 @@ const ResultsExport: React.FC = () => {
     setLoading(true);
     try {
       const result = await window.electronAPI.showOpenDialog({
-        title: 'Select OE12 XML Results File',
+        title: 'Select Results File',
         filters: [
+          { name: 'Results Files', extensions: ['xml', 'csv'] },
           { name: 'XML Files', extensions: ['xml'] },
+          { name: 'CSV Files', extensions: ['csv'] },
           { name: 'All Files', extensions: ['*'] }
         ],
         properties: ['openFile']
@@ -70,22 +72,29 @@ const ResultsExport: React.FC = () => {
             url: selectedPath
           } as any]);
           
-          // Parse XML to extract event info
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(fileResult.content, 'text/xml');
-          
-          const eventName = xmlDoc.querySelector('Event > Name')?.textContent?.trim() || 'Event Results';
-          const eventDate = xmlDoc.querySelector('Event > StartTime > Date')?.textContent?.trim() || new Date().toISOString().split('T')[0];
-          
-          setEventInfo({ name: eventName, date: eventDate });
           setResult(null);
+          const isXml = fileResult.content.trimStart().startsWith('<?xml') || fileResult.content.trimStart().startsWith('<');
 
-          // Auto-run XML checker
-          const checkResult = xmlCheckerService.validateXml(fileResult.content);
-          setXmlCheckResult(checkResult);
+          // Extract event info
+          if (isXml) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(fileResult.content, 'text/xml');
+            const eventName = xmlDoc.querySelector('Event > Name')?.textContent?.trim() || 'Event Results';
+            const eventDate = xmlDoc.querySelector('Event > StartTime > Date')?.textContent?.trim() || new Date().toISOString().split('T')[0];
+            setEventInfo({ name: eventName, date: eventDate });
 
-          // Parse and detect predicted groups for validation
-          const parsed = resultsExportService.parseOE12XML(fileResult.content);
+            // XML checker only applies to XML files
+            const checkResult = xmlCheckerService.validateXml(fileResult.content);
+            setXmlCheckResult(checkResult);
+          } else {
+            // For CSV, derive event name from filename
+            const baseName = selectedFileName.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+            setEventInfo({ name: baseName, date: new Date().toISOString().split('T')[0] });
+            setXmlCheckResult(null);
+          }
+
+          // Parse results (auto-detects format)
+          const parsed = resultsExportService.parseAuto(fileResult.content);
           setParsedResults(parsed);
           const predictions = resultsExportService.detectPredictedGroups(parsed);
           setPredictedGroups(predictions);
@@ -118,7 +127,7 @@ const ResultsExport: React.FC = () => {
 
     try {
       // Parse XML using stored content
-      const classResults = resultsExportService.parseOE12XML(fileContent);
+      const classResults = resultsExportService.parseAuto(fileContent);
 
       if (!eventInfo) {
         throw new Error('Event information not loaded');
@@ -139,8 +148,9 @@ const ResultsExport: React.FC = () => {
       );
 
       // Determine output paths (same directory as input file)
-      const resultsOutputPath = filePath.replace(/\.xml$/i, '_results.html');
-      const splitsOutputPath = filePath.replace(/\.xml$/i, '_splits.html');
+      const basePath = filePath.replace(/\.(xml|csv)$/i, '');
+      const resultsOutputPath = basePath + '_results.html';
+      const splitsOutputPath = basePath + '_splits.html';
 
       // Save files using Electron API
       if (window.electron) {
@@ -397,12 +407,12 @@ const ResultsExport: React.FC = () => {
               <GlobalOutlined /> Post Results Online
             </Title>
             <Paragraph type="secondary">
-              Import OE12 XML results file and generate professional HTML pages for your club website.
+              Import MeOS results (IOF 3.0 XML or OE2003 CSV) and generate professional HTML pages for your club website. CSV includes sex and year of birth.
             </Paragraph>
           </div>
 
           {/* File Upload */}
-          <Card type="inner" title="1. Select OE12 XML Results File">
+          <Card type="inner" title="1. Select Results File (XML or CSV)">
             <Space direction="vertical" style={{ width: '100%' }}>
               <Button 
                 icon={<UploadOutlined />} 
@@ -410,7 +420,7 @@ const ResultsExport: React.FC = () => {
                 disabled={loading}
                 size="large"
               >
-                Browse for XML File
+                Browse for XML or CSV File
               </Button>
               
               {fileList.length > 0 && (
